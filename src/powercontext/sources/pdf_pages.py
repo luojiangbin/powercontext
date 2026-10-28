@@ -175,63 +175,70 @@ def _search_terms(text: str) -> list[str]:
     return [token for token in terms if token not in _SEARCH_STOPWORDS]
 
 
+_SEARCH_STOPWORDS = frozenset(
+    """
+    a an and are as at be been by did do does for from had has have how in into is it its of on or that the their
+    there these this to was were what when where which who why will with year years company companies total
+    """.split()
+)
+
+
+def _search_terms(text: str) -> list[str]:
+    import re
+
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    return [token for token in tokens if len(token) > 1 and token not in _SEARCH_STOPWORDS]
+
+
 async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[MemoryCitation, ...]:
-    """Return distinct page-level citations ranked by lexical evidence strength."""
+    """Rank every stored page against the question with a BM25-style lexical score."""
 
     import math
 
     from powercontext.builtin.artifacts.memory.models import MemoryCitation
-    from powercontext.builtin.runtime import SearchMemoryRequest
 
     if not isinstance(question, str) or not question.strip():
         raise ValueError("question must be a non-empty string")
     if limit < 1:
         raise ValueError("limit must be positive")
 
-    terms = _search_terms(question)
-    queries = [question]
-    if terms:
-        queries.append(" ".join(terms))
-        numbers = [term for term in terms if term.isdigit()]
-        if numbers:
-            queries.append(" ".join(numbers[:6] + terms[:6]))
-
-    pool: dict[str, tuple[MemoryCitation, str]] = {}
-    for query in dict.fromkeys(queries):
-        page = await memory.search(SearchMemoryRequest(query=query, mode="fts", limit=120))
-        for hit in page.hits:
-            if hit.entry_id in pool:
-                continue
-            pool[hit.entry_id] = (
-                MemoryCitation(
-                    memory_ref=hit.memory_ref,
-                    entry_id=hit.entry_id,
-                    entry_version_id=hit.entry_version_id,
-                ),
-                hit.text.lower(),
-            )
-
-    if not pool:
+    entries_page = await memory.list()
+    if not entries_page.entries:
         return ()
 
-    document_frequency: dict[str, int] = {}
-    for _, text in pool.values():
-        for term in set(terms):
-            if term in text:
-                document_frequency[term] = document_frequency.get(term, 0) + 1
-    total = len(pool)
+    terms = _search_terms(question)
+    if not terms:
+        return ()
 
+    documents: list[tuple[MemoryCitation, str, int]] = []
+    for record in entries_page.entries:
+        entry = record.entry
+        text = entry.text.lower()
+        citation = MemoryCitation(
+            memory_ref=record.memory_ref,
+            entry_id=entry.entry_id,
+            entry_version_id=entry.entry_version_id,
+        )
+        documents.append((citation, text, len(text.split())))
+
+    total = len(documents)
+    average_length = sum(length for _, _, length in documents) / max(total, 1) or 1.0
+    document_frequency: dict[str, int] = {}
+    for term in terms:
+        document_frequency[term] = sum(1 for _, text, _ in documents if term in text)
+
+    k1, b = 1.5, 0.75
     scored: list[tuple[float, int, MemoryCitation]] = []
-    for order, (citation, text) in enumerate(pool.values()):
+    for order, (citation, text, length) in enumerate(documents):
         score = 0.0
         for term in terms:
             occurrences = text.count(term)
             if not occurrences:
                 continue
-            weight = math.log(1.0 + total / (1.0 + document_frequency.get(term, 0)))
-            if term.isdigit():
-                weight *= 2.0
-            score += weight * (1.0 + math.log(min(occurrences, 3)))
+            idf = math.log(1.0 + (total - document_frequency[term] + 0.5) / (document_frequency[term] + 0.5))
+            denominator = occurrences + k1 * (1 - b + b * length / average_length)
+            weight = 2.0 if term.isdigit() else 1.0
+            score += weight * idf * occurrences * (k1 + 1) / denominator
         scored.append((score, order, citation))
 
     scored.sort(key=lambda item: (-item[0], item[1]))
