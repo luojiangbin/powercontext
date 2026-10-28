@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>B+树索引</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         max-width: 820px; margin: 0 auto; padding: 32px 20px; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  .muted { color: #888; font-size: 14px; }
+  a { color: #1a73e8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  input { width: 100%; padding: 12px 14px; font-size: 16px; border: 1px solid #ccc;
+           border-radius: 8px; box-sizing: border-box; }
+  .item { padding: 12px 0; border-bottom: 1px solid #eee; }
+  pre { background: #f6f8fa; padding: 12px; border-radius: 8px; overflow-x: auto; }
+</style>
+
+</head>
+<body>
+<h1>B+树索引</h1><p class='muted'>数据库</p><pre># B+ 树索引
+
+## 结构
+
+B+ 树是 N 叉平衡树：非叶子节点只存键和指针，叶子节点存数据并按序双向链表连接。所有查询都走到叶子，树高一致，所以查询时间稳定。
+
+一个 3 层的 B+ 树大约能存 2000 万行（假设每页 16KB、主键 bigint），这也是为什么 InnoDB 单表建议不超过两千万行。
+
+## 聚簇索引与二级索引
+
+- 聚簇索引：叶子存整行数据，主键索引就是它。
+- 二级索引：叶子存主键值，查完整行要&quot;回表&quot;再查一次聚簇索引。
+
+覆盖索引指的是查询字段全在二级索引里，不需要回表。explain 的 Extra 出现 Using index 就是覆盖索引。
+
+## 最左前缀
+
+联合索引 (a, b, c) 可以支持 a、a+b、a+b+c 的查询，但不能支持 b、c 单独查询。范围查询会截断后续列的索引使用：a = 1 and b &gt; 2 and c = 3 中 c 用不上索引排序。
+
+## 常见坑
+
+- 在索引列上做函数运算或隐式类型转换，索引失效。
+- 区分度低的列（比如性别）单独建索引意义不大。
+- 索引不是越多越好，每个索引都增加写入成本和空间占用。
+</pre><p><a href='../index.html'>← 返回目录</a></p>
+</body>
+</html>
