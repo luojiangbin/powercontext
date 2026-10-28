@@ -25,6 +25,7 @@ pip install -r requirements.txt
 python studyindex.py init            # 建库建表
 python studyindex.py ingest notes    # 导入笔记
 python studyindex.py search 红黑树    # 命令行检索
+python studyindex.py search 索引 --course 数据库   # 只在该课程内检索
 python studyindex.py build-site      # 生成 site/
 ```
 

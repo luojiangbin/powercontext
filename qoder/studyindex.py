@@ -4,6 +4,7 @@
     python studyindex.py init                 初始化库与表
     python studyindex.py ingest notes         导入笔记目录
     python studyindex.py search 红黑树         关键词检索
+    python studyindex.py search 索引 --course 数据库   在指定课程内检索
     python studyindex.py build-site           生成静态站到 site/
 """
 
@@ -67,10 +68,10 @@ def cmd_ingest(directory: str) -> None:
     print(f"已导入 {count} 篇笔记到 seekdb")
 
 
-def cmd_search(keyword: str) -> None:
-    rows = seekdb_store.search(keyword)
+def cmd_search(keyword: str, course: str | None = None) -> None:
+    rows = seekdb_store.search(keyword, course=course)
     if not rows:
-        print("没有命中")
+        print(f"[{course}] 没有命中" if course else "没有命中")
         return
     for row in rows:
         snippet = re.sub(r"\s+", " ", row["content"])[:120]
@@ -163,6 +164,7 @@ def main() -> None:
     ingest_parser.add_argument("directory", nargs="?", default="notes")
     search_parser = sub.add_parser("search")
     search_parser.add_argument("keyword")
+    search_parser.add_argument("--course", help="只在该课程内检索，例如：数据库")
     sub.add_parser("build-site")
     args = parser.parse_args()
 
@@ -171,7 +173,7 @@ def main() -> None:
     elif args.command == "ingest":
         cmd_ingest(args.directory)
     elif args.command == "search":
-        cmd_search(args.keyword)
+        cmd_search(args.keyword, args.course)
     else:
         cmd_build_site()
 

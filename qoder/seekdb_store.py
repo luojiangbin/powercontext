@@ -75,20 +75,24 @@ def ingest(directory: Path) -> int:
     return count
 
 
-def search(keyword: str, limit: int = 20) -> list[dict]:
-    """按标题或正文做关键词检索，命中数高的排前面。"""
+def search(keyword: str, limit: int = 20, course: str | None = None) -> list[dict]:
+    """按标题或正文做关键词检索，命中数高的排前面；传入 course 时只查该课程。"""
 
     pattern = f"%{keyword}%"
+    sql = (
+        f"SELECT title, course, content,"
+        f" (CHAR_LENGTH(content) - CHAR_LENGTH(REPLACE(content, %s, ''))) / CHAR_LENGTH(%s) AS hits"
+        f" FROM {TABLE}"
+        " WHERE (title LIKE %s OR content LIKE %s)"
+    )
+    params: list = [keyword, keyword, pattern, pattern]
+    if course:
+        sql += " AND course = %s"
+        params.append(course)
+    sql += " ORDER BY hits DESC, title"
     with _connect() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                f"SELECT title, course, content,"
-                f" (CHAR_LENGTH(content) - CHAR_LENGTH(REPLACE(content, %s, ''))) / CHAR_LENGTH(%s) AS hits"
-                f" FROM {TABLE}"
-                " WHERE title LIKE %s OR content LIKE %s"
-                " ORDER BY hits DESC, title",
-                (keyword, keyword, pattern, pattern),
-            )
+            cursor.execute(sql, params)
             return list(cursor.fetchall())
 
 
