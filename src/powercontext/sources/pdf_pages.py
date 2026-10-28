@@ -87,6 +87,12 @@ def parse_pdf_document(value: PDFDocumentInput, /) -> tuple[PDFPageInput, ...]:
         digest = hashlib.sha256(value.content).hexdigest()
         for index, page in enumerate(reader.pages, start=1):
             text = page.extract_text() or ""
+            if not text.strip():
+                # 兜底：plain 模式提取为空时尝试 layout 模式，避免漏掉排版特殊页的可提取正文
+                try:
+                    text = page.extract_text(extraction_mode="layout") or text
+                except Exception:
+                    pass
             pages.append(
                 PDFPageInput(
                     document_id=document_id,
@@ -171,29 +177,23 @@ _SEARCH_STOPWORDS = frozenset(
 def _search_terms(text: str) -> list[str]:
     import re
 
-    terms = [token for token in re.findall(r"[a-z0-9]+", text.lower()) if len(token) > 1]
-    return [token for token in terms if token not in _SEARCH_STOPWORDS]
-
-
-_SEARCH_STOPWORDS = frozenset(
-    """
-    a an and are as at be been by did do does for from had has have how in into is it its of on or that the their
-    there these this to was were what when where which who why will with year years company companies total
-    """.split()
-)
-
-
-def _search_terms(text: str) -> list[str]:
-    import re
-
     tokens = re.findall(r"[a-z0-9]+", text.lower())
     return [token for token in tokens if len(token) > 1 and token not in _SEARCH_STOPWORDS]
 
 
+def _token_matches(token: str, term: str) -> bool:
+    """Exact match, plus prefix variants (increase matches increased/increases) for longer terms."""
+
+    if token == term:
+        return True
+    return len(term) >= 5 and token.startswith(term)
+
+
 async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[MemoryCitation, ...]:
-    """Rank every stored page against the question with a BM25-style lexical score."""
+    """Rank every stored page with BM25, phrase boost and document-prioritised allocation."""
 
     import math
+    import re
 
     from powercontext.builtin.artifacts.memory.models import MemoryCitation
 
@@ -210,39 +210,88 @@ async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[Memo
     if not terms:
         return ()
 
-    documents: list[tuple[MemoryCitation, str, int]] = []
+    pages: list[tuple[MemoryCitation, str, str, list[str], int]] = []
     for record in entries_page.entries:
         entry = record.entry
-        text = entry.text.lower()
+        text = entry.text
+        document_id, _, body = text.partition("\n")
+        tokens = re.findall(r"[a-z0-9]+", body.lower())
         citation = MemoryCitation(
             memory_ref=record.memory_ref,
             entry_id=entry.entry_id,
             entry_version_id=entry.entry_version_id,
         )
-        documents.append((citation, text, len(text.split())))
+        pages.append((citation, document_id, body, tokens, len(tokens)))
 
-    total = len(documents)
-    average_length = sum(length for _, _, length in documents) / max(total, 1) or 1.0
+    total = len(pages)
+    average_length = sum(length for *_, length in pages) / total or 1.0
     document_frequency: dict[str, int] = {}
     for term in terms:
-        document_frequency[term] = sum(1 for _, text, _ in documents if term in text)
+        document_frequency[term] = sum(1 for *_, _, _, tokens, _ in pages if any(_token_matches(t, term) for t in tokens))
 
     k1, b = 1.5, 0.75
-    scored: list[tuple[float, int, MemoryCitation]] = []
-    for order, (citation, text, length) in enumerate(documents):
+    scored: list[tuple[float, str, int, MemoryCitation]] = []
+    for order, (citation, document_id, body, tokens, length) in enumerate(pages):
         score = 0.0
         for term in terms:
-            occurrences = text.count(term)
+            occurrences = sum(1 for token in tokens if _token_matches(token, term))
             if not occurrences:
                 continue
             idf = math.log(1.0 + (total - document_frequency[term] + 0.5) / (document_frequency[term] + 0.5))
             denominator = occurrences + k1 * (1 - b + b * length / average_length)
             weight = 2.0 if term.isdigit() else 1.0
             score += weight * idf * occurrences * (k1 + 1) / denominator
-        scored.append((score, order, citation))
+        # 短语加权：相邻查询词在页内成短语出现时显著加分
+        for left, right in zip(terms, terms[1:]):
+            phrase_hits = body.count(f"{left} {right}")
+            if phrase_hits:
+                score += 0.8 * math.log1p(phrase_hits) * (2.0 if left.isdigit() or right.isdigit() else 1.0)
+        scored.append((score, document_id, order, citation))
 
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return tuple(citation for _, _, citation in scored[:limit])
+    scored.sort(key=lambda item: (-item[0], item[2]))
+
+    # 文档优先分配：相关度最高的文档拿大头，其余文档按比例保底，避免单一文档霸榜
+    document_rank: dict[str, float] = {}
+    document_order: list[str] = []
+    for _, document_id, _, _ in scored:
+        if document_id not in document_rank:
+            document_rank[document_id] = 0.0
+            document_order.append(document_id)
+    for score, document_id, _, _ in scored:
+        document_rank[document_id] = max(document_rank[document_id], score)
+
+    ranked_documents = sorted(document_order, key=lambda d: (-document_rank[d], document_order.index(d)))
+    if len(ranked_documents) <= 1:
+        return tuple(citation for _, _, _, citation in scored[:limit])
+
+    primary_cap = max(1, math.ceil(limit * 0.6))
+    secondary_cap = max(1, math.ceil(limit * 0.25))
+    budget: dict[str, int] = {}
+    remaining = limit
+    for index, document_id in enumerate(ranked_documents):
+        if index == 0:
+            allowance = min(primary_cap, remaining)
+        elif index == 1:
+            allowance = min(secondary_cap, remaining)
+        else:
+            allowance = remaining // max(len(ranked_documents) - index, 1) or (1 if remaining else 0)
+        budget[document_id] = allowance
+        remaining -= allowance
+        if remaining <= 0:
+            break
+    if remaining > 0:
+        budget[ranked_documents[0]] = budget.get(ranked_documents[0], 0) + remaining
+
+    picks: list[tuple[float, int, MemoryCitation]] = []
+    for index, (score, document_id, order, citation) in enumerate(scored):
+        if budget.get(document_id, 0) <= 0:
+            continue
+        budget[document_id] -= 1
+        picks.append((score, index, citation))
+        if len(picks) >= limit:
+            break
+    picks.sort(key=lambda item: (-item[0], item[1]))
+    return tuple(citation for _, _, citation in picks)
 
 
 __all__ = [
