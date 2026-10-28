@@ -160,36 +160,82 @@ PDF_PAGE_SOURCE_DEFINITION = AdapterSourceDefinition(
 )
 
 
+_SEARCH_STOPWORDS = frozenset(
+    """
+    a an and are as at be been by did do does for from had has have how in into is it its of on or that the their
+    there these this to was were what when where which who why will with year years company companies total
+    """.split()
+)
+
+
+def _search_terms(text: str) -> list[str]:
+    import re
+
+    terms = [token for token in re.findall(r"[a-z0-9]+", text.lower()) if len(token) > 1]
+    return [token for token in terms if token not in _SEARCH_STOPWORDS]
+
+
 async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[MemoryCitation, ...]:
-    """Return distinct page-level citations for one natural-language question."""
+    """Return distinct page-level citations ranked by lexical evidence strength."""
+
+    import math
 
     from powercontext.builtin.artifacts.memory.models import MemoryCitation
-    from powercontext.builtin.runtime import GetMemoryEntryRequest, SearchMemoryRequest
+    from powercontext.builtin.runtime import SearchMemoryRequest
 
     if not isinstance(question, str) or not question.strip():
         raise ValueError("question must be a non-empty string")
     if limit < 1:
         raise ValueError("limit must be positive")
 
-    page = await memory.search(SearchMemoryRequest(query=question, mode="fts", limit=max(limit * 4, limit)))
-    citations: list[MemoryCitation] = []
-    seen: set[str] = set()
-    for hit in page.hits:
-        citation = MemoryCitation(
-            memory_ref=hit.memory_ref,
-            entry_id=hit.entry_id,
-            entry_version_id=hit.entry_version_id,
-        )
-        entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
-        for reference in entry.sources:
-            if reference.source_id in seen:
+    terms = _search_terms(question)
+    queries = [question]
+    if terms:
+        queries.append(" ".join(terms))
+        numbers = [term for term in terms if term.isdigit()]
+        if numbers:
+            queries.append(" ".join(numbers[:6] + terms[:6]))
+
+    pool: dict[str, tuple[MemoryCitation, str]] = {}
+    for query in dict.fromkeys(queries):
+        page = await memory.search(SearchMemoryRequest(query=query, mode="fts", limit=120))
+        for hit in page.hits:
+            if hit.entry_id in pool:
                 continue
-            seen.add(reference.source_id)
-            citations.append(citation)
-            break
-        if len(citations) >= limit:
-            break
-    return tuple(citations)
+            pool[hit.entry_id] = (
+                MemoryCitation(
+                    memory_ref=hit.memory_ref,
+                    entry_id=hit.entry_id,
+                    entry_version_id=hit.entry_version_id,
+                ),
+                hit.text.lower(),
+            )
+
+    if not pool:
+        return ()
+
+    document_frequency: dict[str, int] = {}
+    for _, text in pool.values():
+        for term in set(terms):
+            if term in text:
+                document_frequency[term] = document_frequency.get(term, 0) + 1
+    total = len(pool)
+
+    scored: list[tuple[float, int, MemoryCitation]] = []
+    for order, (citation, text) in enumerate(pool.values()):
+        score = 0.0
+        for term in terms:
+            occurrences = text.count(term)
+            if not occurrences:
+                continue
+            weight = math.log(1.0 + total / (1.0 + document_frequency.get(term, 0)))
+            if term.isdigit():
+                weight *= 2.0
+            score += weight * (1.0 + math.log(min(occurrences, 3)))
+        scored.append((score, order, citation))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return tuple(citation for _, _, citation in scored[:limit])
 
 
 __all__ = [

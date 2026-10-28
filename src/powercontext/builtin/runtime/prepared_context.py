@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -805,11 +806,14 @@ def _evidence_fragments(
     query: str,
     memory_candidates: Sequence[PreparedMemoryCandidates],
 ) -> tuple[MemoryFragment, ...]:
+    """Rank every candidate sentence by IDF-weighted term coverage, best first."""
+
     terms = _query_terms(query)
     if not terms:
         return ()
-    scored: list[tuple[int, int, int, int, MemoryEntryAddress, str]] = []
-    order = 0
+
+    sentences: list[tuple[int, int, int, MemoryEntryAddress, str]] = []
+    hit_index = 0
     for group in memory_candidates:
         for hit in group.hits:
             address = MemoryEntryAddress(
@@ -818,15 +822,35 @@ def _evidence_fragments(
                 entry_version_id=hit.entry_version_id,
             )
             for start, end in _sentence_spans(hit.text):
-                body = hit.text[start:end].lower()
-                matches = sum(1 for term in terms if term in body)
-                if matches:
-                    scored.append((matches, order, start, end, address, hit.text))
-                    order += 1
-    scored.sort(key=lambda item: (-item[0], item[1]))
+                sentences.append((hit_index, start, end, address, hit.text))
+            hit_index += 1
+    if not sentences:
+        return ()
+
+    total = len(sentences)
+    document_frequency = {
+        term: sum(1 for _, start, end, _, text in sentences if term in text[start:end].lower())
+        for term in terms
+    }
+
+    def score(start: int, end: int, text: str) -> float:
+        body = text[start:end].lower()
+        value = 0.0
+        for term in terms:
+            occurrences = body.count(term)
+            if not occurrences:
+                continue
+            weight = math.log(1.0 + total / (1.0 + document_frequency[term]))
+            value += weight * (1.0 + math.log(min(occurrences, 3)))
+        return value
+
+    ranked = sorted(
+        ((score(start, end, text), hit_index, start, end, address, text) for hit_index, start, end, address, text in sentences),
+        key=lambda item: (-item[0], item[1], item[2]),
+    )
     return tuple(
         MemoryFragment(address=address, start=start, end=end, text=text[start:end])
-        for _, _, start, end, address, text in scored
+        for _, _, start, end, address, text in ranked
     )
 
 
