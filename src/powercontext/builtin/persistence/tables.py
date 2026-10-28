@@ -41,6 +41,7 @@ from powercontext.limits import (
     MAX_EXTERNAL_SKILL_HOST_ID_LENGTH,
     MAX_EXTERNAL_SKILL_LOCATOR_LENGTH,
     MAX_EXTERNAL_SKILL_NAME_LENGTH,
+    MAX_LIFECYCLE_NODE_ID_LENGTH,
     MAX_SCOPE_BINDING_EXTERNAL_ID_LENGTH,
     MAX_SCOPE_BINDING_INTEGRATION_LENGTH,
     MAX_SCOPE_BINDING_KIND_LENGTH,
@@ -1180,6 +1181,30 @@ RECURRENCE_OBSERVATION_TABLE = Table(
 
 RECURRENCE_TABLES = (RECURRENCE_MATCH_TABLE, RECURRENCE_OBSERVATION_TABLE)
 
+# Source-dependent lifecycle state is authoritative: each registered node keeps its
+# binding, the Source event version/sequence, and the currently derived availability.
+LIFECYCLE_NODES_TABLE = Table(
+    "pc_lifecycle_nodes",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("node_id", identity_string(MAX_LIFECYCLE_NODE_ID_LENGTH), primary_key=True),
+    Column("family", identity_string(16), nullable=False),
+    Column("state", identity_string(16), nullable=False),
+    Column("reference", _canonical_payload_type(), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("sequence", BigInteger, nullable=False, server_default="0"),
+    Column("parents", _canonical_payload_type(), nullable=False),
+    Column("policy", identity_string(8), nullable=False),
+    Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
+    ForeignKeyConstraint(("scope_id",), ("pc_scopes.scope_id",), ondelete="CASCADE"),
+    CheckConstraint("family IN ('source', 'memory', 'topic')", name="ck_pc_lifecycle_nodes_family"),
+    CheckConstraint("state IN ('active', 'inactive')", name="ck_pc_lifecycle_nodes_state"),
+    CheckConstraint("policy IN ('all', 'any')", name="ck_pc_lifecycle_nodes_policy"),
+    CheckConstraint("revision > 0", name="ck_pc_lifecycle_nodes_revision_positive"),
+    CheckConstraint("sequence >= 0", name="ck_pc_lifecycle_nodes_sequence_nonnegative"),
+    Index("ix_pc_lifecycle_nodes_scope_family_state", "scope_id", "family", "state"),
+)
+
 BUILTIN_TABLES = (
     SCOPE_TABLES
     + SHARED_TABLES
@@ -1187,5 +1212,5 @@ BUILTIN_TABLES = (
     + MEMORY_TABLES
     + STATISTICS_TABLES
     + RECURRENCE_TABLES
-    + (ARTIFACT_TAGS_TABLE, DREAM_RUNS_TABLE, RECEIPT_MIGRATION_REVIEW_TABLE)
+    + (ARTIFACT_TAGS_TABLE, DREAM_RUNS_TABLE, RECEIPT_MIGRATION_REVIEW_TABLE, LIFECYCLE_NODES_TABLE)
 )
