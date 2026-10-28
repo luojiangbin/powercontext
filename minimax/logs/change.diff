@@ -1,0 +1,8 @@
+--- app/rules.py(before)
++++ app/rules.py(after)
+@@ -3,4 +3,4 @@
+ 
+ def is_adult(age: int) -> bool:
+     """Return True when the person is an adult (18 or older)."""
+-    return age > 18  # BUG: 18 周岁应判定为成年人
++    return age >= 18

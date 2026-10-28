@@ -1,0 +1,4 @@
+pymysql>=1.1
+openai>=1.0
+pytest>=8.0
+powercontext[cli,server]==1.4.0

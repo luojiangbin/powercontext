@@ -1,0 +1,86 @@
+## 规格
+
+# 规格说明
+
+## R1 年龄判定
+
+- 年满 18 周岁（含 18）为成年人。
+- 18 周岁以下为未成年人。
+- 负数年龄视为非法输入，应判定为"非成年人"。
+
+
+## 当前代码 app/rules.py
+
+"""业务规则模块。"""
+
+
+def is_adult(age: int) -> bool:
+    """Return True when the person is an adult (18 or older)."""
+    return age > 18  # BUG: 18 周岁应判定为成年人
+
+
+## 测试 tests/test_rules.py
+
+"""功能与回归测试。"""
+
+from app.rules import is_adult
+
+
+def test_adult_is_recognized():
+    """目标功能：18 周岁应为成年人。改前失败，改后通过。"""
+    assert is_adult(18) is True
+
+
+def test_minor_is_not_adult():
+    """回归：未成年人应判定为非成年人。"""
+    assert is_adult(17) is False
+
+
+def test_negative_age_is_not_adult():
+    """回归：负数年龄应判定为非成年人。"""
+    assert is_adult(-1) is False
+
+
+## seekdb 检索到的相关资料
+
+- [spec] R1 年龄判定
+# 规格说明
+
+## R1 年龄判定
+
+- 年满 18 周岁（含 18）为成年人。
+- 18 周岁以下为未成年人。
+- 负数年龄视为非法输入，应判定为"非成年人"。
+
+- [code] app/rules.py
+"""业务规则模块。"""
+
+
+def is_adult(age: int) -> bool:
+    """Return True when the person is an adult (18 or older)."""
+    return age > 18  # BUG: 18 周岁应判定为成年人
+
+- [test] tests/test_rules.py
+"""功能与回归测试。"""
+
+from app.rules import is_adult
+
+
+def test_adult_is_recognized():
+    """目标功能：18 周岁应为成年人。改前失败，改后通过。"""
+    assert is_adult(18) is True
+
+
+def test_minor_is_not_adult():
+    """回归：未成年人应判定为非成年人。"""
+    assert is_adult(17) is False
+
+
+def test_negative_age_is_not_adult():
+    """回归：负数年龄应判定为非成年人。"""
+    assert is_adult(-1) is False
+
+
+## PowerContext 任务状态
+
+已完成：MiniMax 修复 is_adult；改前测试 exit=1，改后 exit=0；待办：无。
