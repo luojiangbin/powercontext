@@ -35,6 +35,9 @@ python studyindex.py build-site      # 生成 site/
 
 把 `site/` 目录用 Qoder Sites 发布，得到公开访问的网址。
 
+- 在线站点：https://studyindex-o1aofm6py70.qoder.website
+- 发布目录：`dist/`（Qoder Sites 部署配置见 `.StudyIndex 课程资料速查.qoder.site`）
+
 ## 已知限制
 
 - 检索是 `LIKE` 关键字匹配，不是语义检索；同义词需要自己补充关键词。
