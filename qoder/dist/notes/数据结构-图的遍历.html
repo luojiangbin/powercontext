@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>图的遍历</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         max-width: 820px; margin: 0 auto; padding: 32px 20px; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  .muted { color: #888; font-size: 14px; }
+  a { color: #1a73e8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  input { width: 100%; padding: 12px 14px; font-size: 16px; border: 1px solid #ccc;
+           border-radius: 8px; box-sizing: border-box; }
+  .item { padding: 12px 0; border-bottom: 1px solid #eee; }
+  pre { background: #f6f8fa; padding: 12px; border-radius: 8px; overflow-x: auto; }
+</style>
+
+</head>
+<body>
+<h1>图的遍历</h1><p class='muted'>数据结构</p><pre># 图的遍历
+
+## DFS 与 BFS 的取舍
+
+DFS 用栈（递归或显式栈），适合判断连通性、找环、拓扑排序、求强连通分量。BFS 用队列，适合求无权图的最短路径、层次遍历。
+
+复杂度都是 O(V + E)，差别在于空间和访问顺序：DFS 的空间取决于递归深度，最坏 O(V)；BFS 的空间取决于最宽的一层，稠密图可能也接近 O(V)。
+
+## 实现要点
+
+- 邻接表比邻接矩阵省空间，稀疏图优先用邻接表。
+- 一定要有 visited 数组，否则有环图会死循环。
+- 拓扑排序用 DFS 时要记录&quot;三色状态&quot;（未访问/在栈中/已完成），只靠 visited 布尔值判断不出环。
+- BFS 求最短路只能用于无权图；带权图要用 Dijkstra 或 Bellman-Ford。
+
+## 常见坑
+
+递归深度过大时 Python 会 RecursionError，改成显式栈；多源 BFS 要把所有源点同时入队，而不是逐个源点跑一遍。
+</pre><p><a href='../index.html'>← 返回目录</a></p>
+</body>
+</html>

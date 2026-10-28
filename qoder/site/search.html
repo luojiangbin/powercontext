@@ -33,9 +33,11 @@ function render(){
     return {d, n};
   }).filter(x => x.n > 0).sort((a,b) => b.n - a.n);
   out.innerHTML = hits.length
-    ? hits.map(({d,n}) => `<div class=item><b>${d.title}</b>`
-        <span class=muted> · ${d.course} · 命中 ${n}</span>
-        <p class=muted>${d.text.slice(0,120)}…</p></div>`).join('')
+    ? hits.map(({d,n}) =>
+        `<div class=item><b>${d.title}</b>`
+        + `<span class=muted> · ${d.course} · 命中 ${n}</span>`
+        + `<p class=muted>${d.text.slice(0,120)}…</p></div>`
+      ).join('')
     : '<p class=muted>没有命中</p>';
 }
 q.addEventListener('input', render); render();

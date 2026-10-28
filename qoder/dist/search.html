@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>站内搜索</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         max-width: 820px; margin: 0 auto; padding: 32px 20px; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  .muted { color: #888; font-size: 14px; }
+  a { color: #1a73e8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  input { width: 100%; padding: 12px 14px; font-size: 16px; border: 1px solid #ccc;
+           border-radius: 8px; box-sizing: border-box; }
+  .item { padding: 12px 0; border-bottom: 1px solid #eee; }
+  pre { background: #f6f8fa; padding: 12px; border-radius: 8px; overflow-x: auto; }
+</style>
+
+</head>
+<body>
+<h1>站内搜索</h1><p class='muted'>输入关键词，实时过滤（索引来自 seekdb 导出）</p><input id='q' placeholder='例如：红黑树、事务、索引' autofocus><div id='out' style='margin-top:20px'></div><script>
+const DATA = [{"title": "B+树索引", "course": "数据库", "text": "# B+ 树索引 ## 结构 B+ 树是 N 叉平衡树：非叶子节点只存键和指针，叶子节点存数据并按序双向链表连接。所有查询都走到叶子，树高一致，所以查询时间稳定。 一个 3 层的 B+ 树大约能存 2000 万行（假设每页 16KB、主键 bigint），这也是为什么 InnoDB 单表建议不超过两千万行。 ## 聚簇索引与二级索引 - 聚簇索引：叶子存整行数据，主键索引就是它。 - 二级索引：叶子存主键值，查完整行要\"回表\"再查一次聚簇索引。 覆盖索引指的是查询字段全在二级索引里，不需要回表。explain 的 Extra 出现 Using index 就是覆盖索引。 ## 最左前缀 联合索引 (a, b, c) 可以支持 a、a+b、a+b+c 的查询，但不能支持 b、c 单独查询。范围查询会截断后续列的索引使用：a = 1 and b > 2 and c = 3 中 c 用不上索引排序。 ## 常见坑 - 在索引列上做函数运算或隐式类型转换，索引失效。 - 区分度低的列（比如性别）单独建索引意义不大。 - 索引不是越多越好，每个索引都增加写入成本和空间占用。 "}, {"title": "事务隔离级别", "course": "数据库", "text": "# 事务隔离级别 ## 四种隔离级别 | 级别 | 脏读 | 不可重复读 | 幻读 | |---|---|---|---| | 读未提交 RU | 可能 | 可能 | 可能 | | 读已提交 RC | 不会 | 可能 | 可能 | | 可重复读 RR | 不会 | 不会 | 可能（InnoDB 用间隙锁基本避免） | | 串行化 | 不会 | 不会 | 不会 | MySQL 默认是 RR，Oracle 默认是 RC。RC 在高并发写入场景下锁更少、死锁更少，很多互联网公司会主动改成 RC。 ## MVCC 怎么实现 每行记录有隐藏的 trx_id 和 roll_pointer。读的时候根据当前事务的 ReadView 判断版本可见性：比 ReadView 早提交的可见，正在执行中或更晚的不可见，顺着 undo log 往回找。 RC 与 RR 的区别在于 ReadView 的生成时机：RC 每条语句生成一次，RR 只在事务第一次读时生成一次并复用。 ## 常见坑 - 以为 RR 完全没有幻读：范围查询加的是间隙锁，但如果查询没走索引，会退化成锁全表。 - 长事务导致 undo 无法回收，表空间暴涨。 - 用 RU 做\"性能优化\"，其实只省了极少的开销，却引入脏读。 "}, {"title": "图的遍历", "course": "数据结构", "text": "# 图的遍历 ## DFS 与 BFS 的取舍 DFS 用栈（递归或显式栈），适合判断连通性、找环、拓扑排序、求强连通分量。BFS 用队列，适合求无权图的最短路径、层次遍历。 复杂度都是 O(V + E)，差别在于空间和访问顺序：DFS 的空间取决于递归深度，最坏 O(V)；BFS 的空间取决于最宽的一层，稠密图可能也接近 O(V)。 ## 实现要点 - 邻接表比邻接矩阵省空间，稀疏图优先用邻接表。 - 一定要有 visited 数组，否则有环图会死循环。 - 拓扑排序用 DFS 时要记录\"三色状态\"（未访问/在栈中/已完成），只靠 visited 布尔值判断不出环。 - BFS 求最短路只能用于无权图；带权图要用 Dijkstra 或 Bellman-Ford。 ## 常见坑 递归深度过大时 Python 会 RecursionError，改成显式栈；多源 BFS 要把所有源点同时入队，而不是逐个源点跑一遍。 "}, {"title": "红黑树", "course": "数据结构", "text": "# 红黑树 ## 五条性质 1. 每个节点是红色或黑色。 2. 根节点是黑色。 3. 叶子节点（NIL）视为黑色。 4. 红色节点的两个子节点必须是黑色（不能红红相连）。 5. 从任一节点到其所有叶子的路径上，黑色节点数目相同（黑高一致）。 ## 为什么需要它 普通二叉搜索树在有序插入时退化成链表，查找 O(n)。红黑树通过旋转和变色把树高控制在 2log(n+1) 以内，保证查找、插入、删除都是 O(log n)。AVL 树更严格（高度差不超过 1），查询略快但插入删除的旋转次数更多；红黑树在写入频繁的场景更划算，所以被 Java 的 TreeMap、C++ 的 std::map 采用。 ## 插入修复的三种情况 新增节点默认染红，如果父节点是黑色则直接结束。若父节点为红： - 情况一：叔叔节点为红 → 父与叔染黑，祖父染红，把祖父当作新的当前节点继续向上检查。 - 情况二：叔叔为黑且当前节点是右孩子 → 对父节点左旋，转成情况三。 - 情况三：叔叔为黑且当前节点是左孩子 → 父染黑、祖父染红，对祖父右旋。 删除比插入复杂，核心是\"被删节点是黑色时黑高被破坏\"，需要向兄弟借黑色，分四种情况讨论。 ## 常见坑 - 旋转后忘记更新父指针，导致后续回溯访问到旧结构。 - 把 NIL 当成普通节点去染色，破坏性质五。 - 删除时只处理了兄弟为黑的情况，漏掉兄弟为红需要先旋转。 "}];
+const q = document.getElementById('q');
+const out = document.getElementById('out');
+function render(){
+  const k = q.value.trim().toLowerCase();
+  if(!k){ out.innerHTML = '<p class=muted>共 ' + DATA.length + ' 篇笔记</p>'; return; }
+  const hits = DATA.map(d => {
+    const n = (d.text.toLowerCase().split(k).length - 1)
+            + (d.title.toLowerCase().includes(k) ? 3 : 0);
+    return {d, n};
+  }).filter(x => x.n > 0).sort((a,b) => b.n - a.n);
+  out.innerHTML = hits.length
+    ? hits.map(({d,n}) =>
+        `<div class=item><b>${d.title}</b>`
+        + `<span class=muted> · ${d.course} · 命中 ${n}</span>`
+        + `<p class=muted>${d.text.slice(0,120)}…</p></div>`
+      ).join('')
+    : '<p class=muted>没有命中</p>';
+}
+q.addEventListener('input', render); render();
+</script>
+</body>
+</html>
