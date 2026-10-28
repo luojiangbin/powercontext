@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>量化质量评测 · Recall@5 / nDCG@5</title>
+<style>
+body{font:15px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:860px;margin:0 auto;padding:20px}
+pre{background:#f6f8fa;border-radius:8px;padding:12px;overflow:auto}
+.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;background:#e6f4ea;color:#137333}
+</style>
+</head>
+<body>
+<h1>量化质量评测</h1>
+<p id="status" class="muted">加载模型中…</p>
+<pre id="out"></pre>
+<script type="module">
+import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3";
+env.allowLocalModels = false;
+const params = new URLSearchParams(location.search);
+env.remoteHost = params.get("remote") || `${location.origin}/models/`;
+const DTYPE = params.get("dtype") || "q8";
+const DEVICE = params.get("force") === "wasm" ? "wasm" : navigator.gpu ? "webgpu" : "wasm";
+
+// 固定评测集：4 个主题 × 3 篇 = 12 篇文档，6 个查询 + gold 标注
+const DOCS = [
+  { id: 0, topic: "ml", text: "机器学习是人工智能的核心，包括监督学习与无监督学习" },
+  { id: 1, topic: "ml", text: "监督学习使用带标签的数据训练模型进行分类与回归" },
+  { id: 2, topic: "ml", text: "决策树通过特征分裂构建树形模型，可解释性强" },
+  { id: 3, topic: "db", text: "数据库事务满足 ACID 属性，保证操作的原子性与一致性" },
+  { id: 4, topic: "db", text: "MVCC 多版本并发控制通过 undo log 实现无锁读" },
+  { id: 5, topic: "db", text: "B+ 树索引支持范围查询，叶子节点按序链接" },
+  { id: 6, topic: "algo", text: "红黑树是自平衡二叉搜索树，通过旋转与变色维持黑高" },
+  { id: 7, topic: "algo", text: "二分查找要求有序数组，时间复杂度为对数级别" },
+  { id: 8, topic: "algo", text: "动态规划通过保存子问题结果避免重复计算" },
+  { id: 9, topic: "lang", text: "Python 是解释型语言，语法简洁适合快速开发" },
+  { id: 10, topic: "lang", text: "JavaScript 运行在浏览器端，支持事件驱动编程" },
+  { id: 11, topic: "lang", text: "Rust 强调内存安全，采用所有权系统避免悬垂指针" },
+];
+const QUERIES = [
+  { q: "什么是监督学习", gold: [1, 0] },
+  { q: "树模型如何做分类", gold: [2, 0] },
+  { q: "事务的隔离性怎么保证", gold: [3, 4] },
+  { q: "索引怎么加速范围查询", gold: [5] },
+  { q: "自平衡二叉树如何保持平衡", gold: [6] },
+  { q: "哪种语言适合快速开发", gold: [9, 10] },
+];
+const K = 5;
+
+function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+
+const status = document.getElementById("status");
+const out = document.getElementById("out");
+const t0 = performance.now();
+const extractor = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", { dtype: DTYPE, device: DEVICE });
+const loadMs = Math.round(performance.now() - t0);
+status.innerHTML = `<span class="badge">${DTYPE} / ${DEVICE.toUpperCase()}</span> 模型加载 ${loadMs}ms，评测中…`;
+
+const t1 = performance.now();
+const D = (await extractor(DOCS.map((d) => d.text), { pooling: "mean", normalize: true })).tolist();
+const Q = (await extractor(QUERIES.map((x) => x.q), { pooling: "mean", normalize: true })).tolist();
+const evalMs = Math.round(performance.now() - t1);
+
+let recallSum = 0, ndcgSum = 0;
+const perQuery = [];
+for (let qi = 0; qi < Q.length; qi++) {
+  const sims = D.map((d, i) => ({ i, s: dot(Q[qi], d) })).sort((a, b) => b.s - a.s);
+  const top = sims.slice(0, K).map((x) => x.i);
+  const gold = new Set(QUERIES[qi].gold);
+  const hit = top.filter((i) => gold.has(i)).length;
+  recallSum += hit / gold.size;
+  let dcg = 0, idcg = 0;
+  top.forEach((i, k) => { if (gold.has(i)) dcg += 1 / Math.log2(k + 2); });
+  for (let k = 0; k < Math.min(gold.size, K); k++) idcg += 1 / Math.log2(k + 2);
+  ndcgSum += idcg > 0 ? dcg / idcg : 0;
+  perQuery.push({ q: QUERIES[qi].q, hits: hit, gold: gold.size, top5: top });
+}
+const report = {
+  dtype: DTYPE,
+  device: DEVICE,
+  loadMs,
+  evalMs,
+  corpusSize: DOCS.length,
+  queryCount: QUERIES.length,
+  recallAtK: Number((recallSum / QUERIES.length).toFixed(4)),
+  ndcgAtK: Number((ndcgSum / QUERIES.length).toFixed(4)),
+  perQuery,
+};
+out.textContent = JSON.stringify(report, null, 2);
+status.textContent = `完成：Recall@${K}=${report.recallAtK}  nDCG@${K}=${report.ndcgAtK}  (${DTYPE}/${DEVICE})`;
+window.__EVAL_REPORT__ = report;
+</script>
+</body>
+</html>
