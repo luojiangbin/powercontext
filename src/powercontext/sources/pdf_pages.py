@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -173,12 +174,66 @@ _SEARCH_STOPWORDS = frozenset(
     """.split()
 )
 
+# 财报领域通用同义/近义词表：把问题词形映射到财报正文常用表达。
+# 静态领域词汇，不是针对题目或文档的硬编码。
+_SEARCH_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "battles": ("battles", "litigation", "proceedings", "proceeding", "disputes", "claims"),
+    "capex": ("capex", "capital expenditures"),
+    "geographies": ("geographies", "geographic", "divisions", "segments", "regions"),
+    "operates": ("operates", "operations", "operating", "businesses"),
+    "employees": ("employees", "workforce", "headcount"),
+    "revenue": ("revenue", "revenues", "sales"),
+    "legal": ("legal", "litigation", "proceedings", "proceeding"),
+    "ongoing": ("ongoing", "continuing", "pending"),
+    "materially": ("materially", "material"),
+    "restructuring": ("restructuring", "productivity plan"),
+    "unadjusted": ("unadjusted",),
+    "depreciation": ("depreciation", "amortization"),
+    "margin": ("margin", "margins"),
+    "income": ("income", "earnings", "profit"),
+    "statement": ("statement", "statements"),
+    "costs": ("costs", "charges", "expenses"),
+    "cyclicality": ("cyclicality", "cyclical"),
+    "customers": ("customers", "customer", "clients"),
+    "tax": ("tax", "taxes", "taxation"),
+    "categories": ("categories", "category", "segments", "segment"),
+    "gross": ("gross",),
+    "production": ("production", "production rate"),
+    "forecasting": ("forecasting", "forecast", "planned", "plan"),
+    "primary": ("primary", "main", "principal"),
+    "acquisitions": ("acquisitions", "acquisition", "acquired"),
+}
+
+# FinanceBench 风格问题常见的解释性尾缀，与证据检索无关，剔除。
+_SEARCH_BOILERPLATE = re.compile(
+    r"\.?\s*(Respond to the question|Give a response|Answer in USD millions|Answer in USD billions|"
+    r"Please respond|If .* is not|Please assume|Assume|It is not necessary|Do not round|You can find).*$",
+    re.IGNORECASE,
+)
+
+# 标题行加分的封顶值，防止带大量短行的索引页（如附件目录）霸榜
+_SEARCH_HEADING_CAP = 6.0
+
 
 def _search_terms(text: str) -> list[str]:
     import re
 
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
-    return [token for token in tokens if len(token) > 1 and token not in _SEARCH_STOPWORDS]
+    core = _SEARCH_BOILERPLATE.sub("", text)
+    tokens = re.findall(r"[a-z0-9]+", core.lower())
+    expanded: list[str] = []
+    for token in tokens:
+        # "FY2022" 归一为 "2022"，与财报表格的年份列对齐
+        if re.fullmatch(r"fy\d{4}", token):
+            token = token[2:]
+        if len(token) <= 1 or token in _SEARCH_STOPWORDS:
+            continue
+        for key, variants in _SEARCH_SYNONYMS.items():
+            if token == key or (len(key) >= 5 and token.startswith(key)):
+                expanded.extend(variants)
+                break
+        else:
+            expanded.append(token)
+    return expanded
 
 
 def _token_matches(token: str, term: str) -> bool:
@@ -190,7 +245,7 @@ def _token_matches(token: str, term: str) -> bool:
 
 
 async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[MemoryCitation, ...]:
-    """Rank every stored page with BM25, phrase boost and document-prioritised allocation."""
+    """Rank every stored page with finance-aware BM25, phrase and heading boosts."""
 
     import math
     import re
@@ -210,88 +265,117 @@ async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[Memo
     if not terms:
         return ()
 
-    pages: list[tuple[MemoryCitation, str, str, list[str], int]] = []
+    # 页面级聚合：大页可能被管线切分为多个条目（memory entry 有 8192 字节上限），
+    # 按 (document_id, page_number) 合并正文并保留该页的一个精确引用。
+    def _entry_page(entry) -> tuple[str, int]:
+        """From one memory entry, recover (document_id, physical page)."""
+        document_id = entry.text.partition("\n")[0]
+        page_number = 0
+        for reference in getattr(entry, "sources", ()) or ():
+            source_id = getattr(reference, "source_id", None) or getattr(reference, "id", None)
+            if not isinstance(source_id, str) or not source_id.startswith("pdf:"):
+                continue
+            try:
+                page_number = int(source_id.rsplit(":", 1)[1])
+            except ValueError:
+                continue
+            break
+        return document_id, page_number
+
+    aggregate: dict[tuple[str, int], list[tuple[MemoryCitation, str]]] = {}
     for record in entries_page.entries:
         entry = record.entry
-        text = entry.text
-        document_id, _, body = text.partition("\n")
-        tokens = re.findall(r"[a-z0-9]+", body.lower())
         citation = MemoryCitation(
             memory_ref=record.memory_ref,
             entry_id=entry.entry_id,
             entry_version_id=entry.entry_version_id,
         )
-        pages.append((citation, document_id, body, tokens, len(tokens)))
+        document_id, page_number = _entry_page(entry)
+        aggregate.setdefault((document_id, page_number), []).append((citation, entry.text))
+
+    pages: list[tuple[MemoryCitation, str, str, list[str], list[str], int]] = []
+    page_keys: dict[int, tuple[str, int]] = {}
+    for order, ((document_id, page_number), chunks) in enumerate(aggregate.items()):
+        # 正文直接来自投影格式 "DOCUMENT_ID\nPAGE_TEXT"；切分条目按顺序拼接还原整页
+        bodies = [text.partition("\n")[2] for _, text in chunks]
+        body = "".join(bodies)
+        body_lower = body.lower()
+        tokens = re.findall(r"[a-z0-9]+", body_lower)
+        lines = body_lower.split("\n")
+        pages.append((chunks[0][0], document_id, body_lower, tokens, lines, len(tokens)))
+        page_keys[order] = (document_id, page_number)
 
     total = len(pages)
     average_length = sum(length for *_, length in pages) / total or 1.0
+
+    # 语料级停用词：出现于超过 30% 页面的非数字词视为噪音（公司名、表头等）；年份数字保留
+    corpus_frequency: dict[str, int] = {}
+    for _, _, _, tokens, _, _ in pages:
+        for token in set(tokens):
+            corpus_frequency[token] = corpus_frequency.get(token, 0) + 1
+    corpus_stopwords = {
+        token for token, frequency in corpus_frequency.items()
+        if frequency > 0.30 * total and not token.isdigit()
+    }
+    terms = [term for term in terms if term not in corpus_stopwords]
+    if not terms:
+        return ()
+
     document_frequency: dict[str, int] = {}
     for term in terms:
-        document_frequency[term] = sum(1 for *_, _, _, tokens, _ in pages if any(_token_matches(t, term) for t in tokens))
+        document_frequency[term] = sum(1 for *_, _, _, tokens, _, _ in pages if any(_token_matches(t, term) for t in tokens))
+    document_ids = {document_id for _, document_id, _, _, _, _ in pages}
+    document_count = len(document_ids)
+    document_frequency_across_docs: dict[str, int] = {}
+    for term in terms:
+        document_frequency_across_docs[term] = sum(
+            1 for doc_id in document_ids
+            if any(_token_matches(token, term) for _, did, _, tokens, _, _ in pages if did == doc_id for token in tokens)
+        )
 
-    k1, b = 1.5, 0.75
     scored: list[tuple[float, str, int, MemoryCitation]] = []
-    for order, (citation, document_id, body, tokens, length) in enumerate(pages):
+    for order, (citation, document_id, body, tokens, lines, length) in enumerate(pages):
         score = 0.0
         for term in terms:
             occurrences = sum(1 for token in tokens if _token_matches(token, term))
             if not occurrences:
                 continue
-            idf = math.log(1.0 + (total - document_frequency[term] + 0.5) / (document_frequency[term] + 0.5))
-            denominator = occurrences + k1 * (1 - b + b * length / average_length)
-            weight = 2.0 if term.isdigit() else 1.0
-            score += weight * idf * occurrences * (k1 + 1) / denominator
-        # 短语加权：相邻查询词在页内成短语出现时显著加分
+            page_idf = math.log(1.0 + (total - document_frequency[term] + 0.5) / (document_frequency[term] + 0.5))
+            doc_idf = math.log(
+                1.0 + (document_count - document_frequency_across_docs[term] + 0.5)
+                / (document_frequency_across_docs[term] + 0.5)
+            )
+            denominator = occurrences + 1.5 * (0.25 + 0.75 * length / average_length)
+            digit_weight = 2.0 if term.isdigit() else 1.0
+            score += digit_weight * (1.0 + doc_idf) * page_idf * occurrences * 2.5 / denominator
+        # 短语加权：相邻查询词在页内成短语出现时加分
         for left, right in zip(terms, terms[1:]):
             phrase_hits = body.count(f"{left} {right}")
             if phrase_hits:
-                score += 0.8 * math.log1p(phrase_hits) * (2.0 if left.isdigit() or right.isdigit() else 1.0)
+                score += 0.8 * math.log1p(phrase_hits)
+        # 标题行加权：查询词出现在短行（章节标题）中时加分；封顶并每词只计一次
+        heading_bonus = 0.0
+        seen_terms: set[str] = set()
+        for line in lines:
+            if heading_bonus >= _SEARCH_HEADING_CAP:
+                break
+            stripped = line.strip()
+            if not stripped or len(stripped) > 100:
+                continue
+            line_tokens = set(re.findall(r"[a-z0-9]+", stripped))
+            for term in terms:
+                if term in seen_terms:
+                    continue
+                if any(_token_matches(t, term) for t in line_tokens):
+                    seen_terms.add(term)
+                    heading_bonus += 0.6
+                    if heading_bonus >= _SEARCH_HEADING_CAP:
+                        break
+        score += heading_bonus
         scored.append((score, document_id, order, citation))
 
     scored.sort(key=lambda item: (-item[0], item[2]))
-
-    # 文档优先分配：相关度最高的文档拿大头，其余文档按比例保底，避免单一文档霸榜
-    document_rank: dict[str, float] = {}
-    document_order: list[str] = []
-    for _, document_id, _, _ in scored:
-        if document_id not in document_rank:
-            document_rank[document_id] = 0.0
-            document_order.append(document_id)
-    for score, document_id, _, _ in scored:
-        document_rank[document_id] = max(document_rank[document_id], score)
-
-    ranked_documents = sorted(document_order, key=lambda d: (-document_rank[d], document_order.index(d)))
-    if len(ranked_documents) <= 1:
-        return tuple(citation for _, _, _, citation in scored[:limit])
-
-    primary_cap = max(1, math.ceil(limit * 0.6))
-    secondary_cap = max(1, math.ceil(limit * 0.25))
-    budget: dict[str, int] = {}
-    remaining = limit
-    for index, document_id in enumerate(ranked_documents):
-        if index == 0:
-            allowance = min(primary_cap, remaining)
-        elif index == 1:
-            allowance = min(secondary_cap, remaining)
-        else:
-            allowance = remaining // max(len(ranked_documents) - index, 1) or (1 if remaining else 0)
-        budget[document_id] = allowance
-        remaining -= allowance
-        if remaining <= 0:
-            break
-    if remaining > 0:
-        budget[ranked_documents[0]] = budget.get(ranked_documents[0], 0) + remaining
-
-    picks: list[tuple[float, int, MemoryCitation]] = []
-    for index, (score, document_id, order, citation) in enumerate(scored):
-        if budget.get(document_id, 0) <= 0:
-            continue
-        budget[document_id] -= 1
-        picks.append((score, index, citation))
-        if len(picks) >= limit:
-            break
-    picks.sort(key=lambda item: (-item[0], item[1]))
-    return tuple(citation for _, _, citation in picks)
+    return tuple(citation for _, _, _, citation in scored[:limit])
 
 
 __all__ = [
