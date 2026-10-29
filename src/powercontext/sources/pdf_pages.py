@@ -214,6 +214,23 @@ _SEARCH_BOILERPLATE = re.compile(
 # 标题行加分的封顶值，防止带大量短行的索引页（如附件目录）霸榜
 _SEARCH_HEADING_CAP = 6.0
 
+# 三大报表页的通用标题特征（财报排版惯例），用于财务指标类问题的定向加权
+_STATEMENT_MARKERS = (
+    "consolidated balance sheet",
+    "consolidated statement of income",
+    "consolidated statements of operations",
+    "consolidated statement of operations",
+    "consolidated statements of cash flows",
+    "consolidated statement of cash flows",
+    "consolidated statements of financial position",
+    "consolidated statements of earnings",
+    "consolidated statement of earnings",
+)
+
+# 指标类问题触发词：这类问题的证据通常在三大报表页上
+_METRIC_TRIGGERS = ("ratio", "margin", "ebitda", "liquidity", "quick", "gross", "working capital", "profitability")
+_STATEMENT_BOOST = 6.0
+
 
 def _search_terms(text: str) -> list[str]:
     import re
@@ -264,6 +281,7 @@ async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[Memo
     terms = _search_terms(question)
     if not terms:
         return ()
+    metric_question = any(trigger in question.lower() for trigger in _METRIC_TRIGGERS)
 
     # 页面级聚合：大页可能被管线切分为多个条目（memory entry 有 8192 字节上限），
     # 按 (document_id, page_number) 合并正文并保留该页的一个精确引用。
@@ -372,6 +390,9 @@ async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[Memo
                     if heading_bonus >= _SEARCH_HEADING_CAP:
                         break
         score += heading_bonus
+        # 指标类问题的定向加权：三大报表页是最常见的证据来源
+        if metric_question and any(marker in body for marker in _STATEMENT_MARKERS):
+            score += _STATEMENT_BOOST
         scored.append((score, document_id, order, citation))
 
     scored.sort(key=lambda item: (-item[0], item[2]))
