@@ -1,0 +1,16 @@
+services:
+  api:
+    image: dify-api-seekdb:1.18.0
+    extra_hosts:
+      - "host.docker.internal:172.18.0.1"
+  worker:
+    image: dify-api-seekdb:1.18.0
+    extra_hosts:
+      - "host.docker.internal:172.18.0.1"
+  worker_beat:
+    image: dify-api-seekdb:1.18.0
+  plugin_daemon:
+    volumes:
+      - dify_plugin_daemon_storage:/app/storage
+volumes:
+  dify_plugin_daemon_storage:
